@@ -1,12 +1,9 @@
 import os
 import io
 import json
-import datetime
-import urllib.request
-import urllib.parse
+import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
 
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
@@ -49,23 +46,7 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
     cropped_img.save(output, format="JPEG", quality=95)
     return output.getvalue()
 
-def upload_to_tmp_link(image_bytes):
-    """Googleドライブを使わずに、一時的に外部に画像をアップロードしてURL化する処理"""
-    try:
-        url = "https://tmp-link.net/api/upload"
-        req = urllib.request.Request(url, data=image_bytes, method="POST")
-        req.add_header("Content-Type", "image/jpeg")
-        with urllib.request.urlopen(req) as res:
-            res_body = json.loads(res.read().decode("utf-8"))
-            if res_body.get("success"):
-                return res_body.get("url")
-    except Exception as e:
-        print(f"Temporary image host error: {e}")
-    return None
-
 def main():
-    folder_id = os.environ.get('FOLDER_ID')
-    cat_name = os.environ.get('CAT_NAME', '保護猫')
     image_id = os.environ.get('IMAGE_ID')
     copy_id = os.environ.get('COPY_ID')
     text_responses = json.loads(os.environ.get('TEXT_RESPONSES', '{}'))
@@ -75,7 +56,7 @@ def main():
 
     requests_body = []
     
-    # 1. テキスト置換リクエストの作成
+    # 1. テキスト置換
     for key, value in text_responses.items():
         val_str = value[0] if isinstance(value, list) else str(value)
         requests_body.append({
@@ -85,7 +66,7 @@ def main():
             }
         })
 
-    # 2. 画像の切り抜き＆挿入処理
+    # 2. 画像の切り抜き＆流し込み
     if image_id:
         img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
         img_bytes = img_request.execute()
@@ -106,43 +87,27 @@ def main():
             box_h = target_element['size']['height']['magnitude']
 
             processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
+            
+            # Googleドライブを使用せずBase64データとして直接埋め込むリクエスト
+            b64_data = base64.b64encode(processed_img_bytes).decode('utf-8')
+            data_url = f"data:image/jpeg;base64,{b64_data}"
 
-            # ★Googleドライブへはアップロードせず、外部の一時URLに変換
-            web_url = upload_to_tmp_link(processed_img_bytes)
-
-            if web_url:
-                requests_body.append({
-                    "createImage": {
-                        "elementProperties": {
-                            "pageId": slide['pageId'],
-                            "size": target_element['size'],
-                            "transform": target_element['transform']
-                        },
-                        "url": web_url
-                    }
-                })
-                requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
+            requests_body.append({
+                "createImage": {
+                    "elementProperties": {
+                        "pageId": slide['pageId'],
+                        "size": target_element['size'],
+                        "transform": target_element['transform']
+                    },
+                    "url": data_url
+                }
+            })
+            requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
 
     if requests_body:
         slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
-
-    # 3. PDFに変換して保存
-    pdf_request = drive_service.files().export_media(fileId=copy_id, mimeType='application/pdf')
-    pdf_bytes = pdf_request.execute()
-
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-    pdf_media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf')
-    
-    drive_service.files().create(
-        body={"name": f"{cat_name}_紹介カード_{timestamp}.pdf", "parents": [folder_id]},
-        media_body=pdf_media,
-        supportsAllDrives=True
-    ).execute()
-
-    # 4. 編集用スライドの削除
-    drive_service.files().delete(fileId=copy_id, supportsAllDrives=True).execute()
         
-    print("POP generated successfully via GitHub Actions!")
+    print("Python process completed successfully!")
 
 if __name__ == "__main__":
     main()
