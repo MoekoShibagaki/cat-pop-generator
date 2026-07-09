@@ -10,7 +10,6 @@ from PIL import Image
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
 
 def get_gapi_service(service_name, version):
-    # GitHubのSecretsに保存したGoogleの認証JSONを読み込む
     creds_json = json.loads(os.environ.get('GOOGLE_CREDENTIALS'))
     creds = service_account.Credentials.from_service_account_info(creds_json, scopes=SCOPES)
     return build(service_name, version, credentials=creds)
@@ -49,26 +48,18 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
     return output.getvalue()
 
 def main():
-    template_id = os.environ.get('TEMPLATE_ID')
     folder_id = os.environ.get('FOLDER_ID')
     cat_name = os.environ.get('CAT_NAME', '保護猫')
     image_id = os.environ.get('IMAGE_ID')
+    copy_id = os.environ.get('COPY_ID') # ★GASから渡されたコピー済みIDを受け取る
     text_responses = json.loads(os.environ.get('TEXT_RESPONSES', '{}'))
 
     drive_service = get_gapi_service('drive', 'v3')
     slides_service = get_gapi_service('slides', 'v1')
 
-    # 1. テンプレートスライドのコピーを作成（容量エラー回避のために supportsAllDrives を追加）
-    copied_file = drive_service.files().copy(
-        fileId=template_id,
-        body={"name": f"{cat_name}_編集用一時ファイル", "parents": [folder_id]},
-        supportsAllDrives=True
-    ).execute()
-    copy_id = copied_file.get('id')
-
     requests_body = []
     
-    # 2. テキスト置換リクエストの作成
+    # 1. テキスト置換リクエストの作成
     for key, value in text_responses.items():
         val_str = value[0] if isinstance(value, list) else str(value)
         requests_body.append({
@@ -78,9 +69,8 @@ def main():
             }
         })
 
-    # 3. 画像の切り抜き＆挿入処理
+    # 2. 画像の切り抜き＆挿入処理
     if image_id:
-        # ダウンロード時にも supportsAllDrives を設定して安全性を確保
         img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
         img_bytes = img_request.execute()
 
@@ -99,11 +89,10 @@ def main():
             box_w = target_element['size']['width']['magnitude']
             box_h = target_element['size']['height']['magnitude']
 
-            # アスペクト比を維持して中央切り抜き
             processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
 
             media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg', resumable=True)
-            # 一時画像の作成時にも supportsAllDrives を追加
+            # ★新規作成ではなく既存ファイルへの書き込みに変えるため、ここはsupportsAllDrivesのみ継続
             temp_img_file = drive_service.files().create(
                 body={"name": "temp_processed_image.jpg", "parents": [folder_id]},
                 media_body=media,
@@ -129,20 +118,20 @@ def main():
     if requests_body:
         slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
 
-    # 4. PDFに変換して保存
+    # 3. PDFに変換して保存
     pdf_request = drive_service.files().export_media(fileId=copy_id, mimeType='application/pdf')
     pdf_bytes = pdf_request.execute()
 
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
     pdf_media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf')
-    # 完成したPDFの作成時にも supportsAllDrives を追加
+    
     drive_service.files().create(
         body={"name": f"{cat_name}_紹介カード_{timestamp}.pdf", "parents": [folder_id]},
         media_body=pdf_media,
         supportsAllDrives=True
     ).execute()
 
-    # 5. 一時ファイルの削除
+    # 4. 一時ファイルの削除
     drive_service.files().delete(fileId=copy_id, supportsAllDrives=True).execute()
     if image_id and 'temp_img_id' in locals():
         drive_service.files().delete(fileId=temp_img_id, supportsAllDrives=True).execute()
