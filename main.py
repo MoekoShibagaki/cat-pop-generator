@@ -2,9 +2,11 @@ import os
 import io
 import json
 import datetime
+import urllib.request
+import urllib.parse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
 
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
@@ -47,11 +49,25 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
     cropped_img.save(output, format="JPEG", quality=95)
     return output.getvalue()
 
+def upload_to_tmp_link(image_bytes):
+    """Googleドライブを使わずに、一時的に外部に画像をアップロードしてURL化する処理"""
+    try:
+        url = "https://tmp-link.net/api/upload"
+        req = urllib.request.Request(url, data=image_bytes, method="POST")
+        req.add_header("Content-Type", "image/jpeg")
+        with urllib.request.urlopen(req) as res:
+            res_body = json.loads(res.read().decode("utf-8"))
+            if res_body.get("success"):
+                return res_body.get("url")
+    except Exception as e:
+        print(f"Temporary image host error: {e}")
+    return None
+
 def main():
     folder_id = os.environ.get('FOLDER_ID')
     cat_name = os.environ.get('CAT_NAME', '保護猫')
     image_id = os.environ.get('IMAGE_ID')
-    copy_id = os.environ.get('COPY_ID') # ★GASから渡されたコピー済みIDを受け取る
+    copy_id = os.environ.get('COPY_ID')
     text_responses = json.loads(os.environ.get('TEXT_RESPONSES', '{}'))
 
     drive_service = get_gapi_service('drive', 'v3')
@@ -91,29 +107,21 @@ def main():
 
             processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
 
-            media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg', resumable=True)
-            # ★新規作成ではなく既存ファイルへの書き込みに変えるため、ここはsupportsAllDrivesのみ継続
-            temp_img_file = drive_service.files().create(
-                body={"name": "temp_processed_image.jpg", "parents": [folder_id]},
-                media_body=media,
-                supportsAllDrives=True
-            ).execute()
-            temp_img_id = temp_img_file.get('id')
+            # ★Googleドライブへはアップロードせず、外部の一時URLに変換
+            web_url = upload_to_tmp_link(processed_img_bytes)
 
-            drive_service.permissions().create(fileId=temp_img_id, body={"role": "reader", "type": "anyone"}, supportsAllDrives=True).execute()
-            web_url = drive_service.files().get(fileId=temp_img_id, fields='webContentLink', supportsAllDrives=True).execute().get('webContentLink')
-
-            requests_body.append({
-                "createImage": {
-                    "elementProperties": {
-                        "pageId": slide['pageId'],
-                        "size": target_element['size'],
-                        "transform": target_element['transform']
-                    },
-                    "url": web_url
-                }
-            })
-            requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
+            if web_url:
+                requests_body.append({
+                    "createImage": {
+                        "elementProperties": {
+                            "pageId": slide['pageId'],
+                            "size": target_element['size'],
+                            "transform": target_element['transform']
+                        },
+                        "url": web_url
+                    }
+                })
+                requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
 
     if requests_body:
         slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
@@ -131,10 +139,8 @@ def main():
         supportsAllDrives=True
     ).execute()
 
-    # 4. 一時ファイルの削除
+    # 4. 編集用スライドの削除
     drive_service.files().delete(fileId=copy_id, supportsAllDrives=True).execute()
-    if image_id and 'temp_img_id' in locals():
-        drive_service.files().delete(fileId=temp_img_id, supportsAllDrives=True).execute()
         
     print("POP generated successfully via GitHub Actions!")
 
