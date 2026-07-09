@@ -1,8 +1,29 @@
 name: Generate Cat POP
 
 on:
-  repository_dispatch:
-    types: [form_submission]
+  workflow_dispatch:
+    inputs:
+      template_id:
+        description: 'Template ID'
+        required: true
+      folder_id:
+        description: 'Folder ID'
+        required: true
+      cat_name:
+        description: 'Cat Name'
+        required: true
+      image_id:
+        description: 'Image ID'
+        required: false
+      copy_id:
+        description: 'Copy ID'
+        required: true
+      text_responses:
+        description: 'Text Responses JSON'
+        required: true
+      to_email:
+        description: 'To Email'
+        required: false
 
 jobs:
   generate:
@@ -23,13 +44,14 @@ jobs:
 
     - name: Run script
       env:
-        # GASから送られてくるデータを環境変数としてPythonに渡す
-        TEMPLATE_ID: ${{ github.event.client_payload.template_id }}
-        FOLDER_ID: ${{ github.event.client_payload.folder_id }}
-        CAT_NAME: ${{ github.event.client_payload.cat_name }}
-        IMAGE_ID: ${{ github.event.client_payload.image_id }}
-        TO_EMAIL: ${{ github.event.client_payload.to_email }}
-        TEXT_RESPONSES: ${{ toJson(github.event.client_payload.responses) }}
+        # GASの inputs から送られてくるデータを環境変数としてPythonに渡す
+        TEMPLATE_ID: ${{ github.event.inputs.template_id }}
+        FOLDER_ID: ${{ github.event.inputs.folder_id }}
+        CAT_NAME: ${{ github.event.inputs.cat_name }}
+        IMAGE_ID: ${{ github.event.inputs.image_id }}
+        COPY_ID: ${{ github.event.inputs.copy_id }}
+        TO_EMAIL: ${{ github.event.inputs.to_email }}
+        TEXT_RESPONSES: ${{ github.event.inputs.text_responses }}
         # Google APIの認証情報をSecretsから読み込む
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: python main.py
