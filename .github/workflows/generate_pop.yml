@@ -1,0 +1,35 @@
+name: Generate Cat POP
+
+on:
+  repository_dispatch:
+    types: [form_submission]
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib Pillow
+
+    - name: Run script
+      env:
+        # GASから送られてくるデータを環境変数としてPythonに渡す
+        TEMPLATE_ID: ${{ github.event.client_payload.template_id }}
+        FOLDER_ID: ${{ github.event.client_payload.folder_id }}
+        CAT_NAME: ${{ github.event.client_payload.cat_name }}
+        IMAGE_ID: ${{ github.event.client_payload.image_id }}
+        TO_EMAIL: ${{ github.event.client_payload.to_email }}
+        TEXT_RESPONSES: ${{ toJson(github.event.client_payload.responses) }}
+        # Google APIの認証情報をSecretsから読み込む
+        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      run: python main.py
