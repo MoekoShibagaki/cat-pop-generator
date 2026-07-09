@@ -58,10 +58,11 @@ def main():
     drive_service = get_gapi_service('drive', 'v3')
     slides_service = get_gapi_service('slides', 'v1')
 
-    # 1. テンプレートスライドのコピーを作成
+    # 1. テンプレートスライドのコピーを作成（容量エラー回避のために supportsAllDrives を追加）
     copied_file = drive_service.files().copy(
         fileId=template_id,
-        body={"name": f"{cat_name}_編集用一時ファイル", "parents": [folder_id]}
+        body={"name": f"{cat_name}_編集用一時ファイル", "parents": [folder_id]},
+        supportsAllDrives=True
     ).execute()
     copy_id = copied_file.get('id')
 
@@ -79,7 +80,8 @@ def main():
 
     # 3. 画像の切り抜き＆挿入処理
     if image_id:
-        img_request = drive_service.files().get_media(fileId=image_id)
+        # ダウンロード時にも supportsAllDrives を設定して安全性を確保
+        img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
         img_bytes = img_request.execute()
 
         presentation = slides_service.presentations().get(presentationId=copy_id).execute()
@@ -101,14 +103,16 @@ def main():
             processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
 
             media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg', resumable=True)
+            # 一時画像の作成時にも supportsAllDrives を追加
             temp_img_file = drive_service.files().create(
                 body={"name": "temp_processed_image.jpg", "parents": [folder_id]},
-                media_body=media
+                media_body=media,
+                supportsAllDrives=True
             ).execute()
             temp_img_id = temp_img_file.get('id')
 
-            drive_service.permissions().create(fileId=temp_img_id, body={"role": "reader", "type": "anyone"}).execute()
-            web_url = drive_service.files().get(fileId=temp_img_id, fields='webContentLink').execute().get('webContentLink')
+            drive_service.permissions().create(fileId=temp_img_id, body={"role": "reader", "type": "anyone"}, supportsAllDrives=True).execute()
+            web_url = drive_service.files().get(fileId=temp_img_id, fields='webContentLink', supportsAllDrives=True).execute().get('webContentLink')
 
             requests_body.append({
                 "createImage": {
@@ -131,15 +135,17 @@ def main():
 
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
     pdf_media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf')
+    # 完成したPDFの作成時にも supportsAllDrives を追加
     drive_service.files().create(
         body={"name": f"{cat_name}_紹介カード_{timestamp}.pdf", "parents": [folder_id]},
-        media_body=pdf_media
+        media_body=pdf_media,
+        supportsAllDrives=True
     ).execute()
 
     # 5. 一時ファイルの削除
-    drive_service.files().delete(fileId=copy_id).execute()
+    drive_service.files().delete(fileId=copy_id, supportsAllDrives=True).execute()
     if image_id and 'temp_img_id' in locals():
-        drive_service.files().delete(fileId=temp_img_id).execute()
+        drive_service.files().delete(fileId=temp_img_id, supportsAllDrives=True).execute()
         
     print("POP generated successfully via GitHub Actions!")
 
