@@ -60,7 +60,7 @@ def main():
 
     requests_body = []
     
-    # 1. テキスト置換（文字データはすべてここで安全に置換されます）
+    # 1. テキスト置換リクエストの作成
     for key, value in text_responses.items():
         val_str = value[0] if isinstance(value, list) else str(value)
         requests_body.append({
@@ -88,16 +88,17 @@ def main():
                 
                 target_element = None
                 for element in slide.get('pageElements', []):
-                    # 💡 改善の要：文字チェックを廃止し、ユーザーが設定した「代替テキスト（説明・タイトル）」だけを厳密にチェック
                     desc = (element.get('description', '') or '').strip()
                     title = (element.get('title', '') or '').strip()
                     
+                    # 代替テキストの「タイトル」または「説明」に「写真」が含まれているか判定
                     if '写真' in desc or '写真' in title:
                         target_element = element
-                        print(f"DEBUG: 厳密な判定により、本物の写真枠を発見しました。ID: {element.get('objectId')}, 説明: '{desc}', タイトル: '{title}'")
-                        break
+                        print(f"DEBUG: 【特定成功】本物の写真枠を確定しました。ID: {element.get('objectId')}")
+                        break # 💡 修正：見つかった時点で確実にループを抜ける（上書きを完全に防止）
 
-                if target_element and slide_id:
+                # 💡 修正：判定ロジックのインデントをforループの外側に正しく修正
+                if target_element:
                     box_w = target_element['size']['width']['magnitude']
                     box_h = target_element['size']['height']['magnitude']
 
@@ -105,26 +106,30 @@ def main():
                     processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
                     
                     # 切り抜いた画像をGoogleドライブに一時保存
-                    file_metadata = {'name': 'tmp_cropped_cat_image.jpg'}
+                    file_metadata = {
+                        'name': 'tmp_cropped_cat_image.jpg',
+                        'mimeType': 'image/jpeg'
+                    }
                     if folder_id:
                         file_metadata['parents'] = [folder_id]
                         
-                    media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg')
+                    media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg', resumable=True)
                     tmp_file = drive_service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
                     tmp_file_id = tmp_file.get('id')
                     print(f"DEBUG: 一時画像を保存しました。ID: {tmp_file_id}")
                     
-                    # 閲覧権限を公開に変更
+                    # 閲覧権限を一般公開（リンクを知っている全員）に変更
                     drive_service.permissions().create(
                         fileId=tmp_file_id,
                         body={'type': 'anyone', 'role': 'reader'},
                         supportsAllDrives=True
                     ).execute()
                     
-                    web_url = f"https://docs.google.com/uc?export=download&id={tmp_file_id}"
+                    # Google APIが一番読み込みやすい直リンクURLを生成
+                    web_url = f"https://drive.google.com/uc?export=download&id={tmp_file_id}"
 
-                    # 枠そのものを画像URLで直接置き換える
-                    requests_body.append({
+                    # 枠を画像URLで置き換える命令を「先頭」に追加
+                    requests_body.insert(0, {
                         "replaceShapeWithImage": {
                             "imageReplaceMethod": "CENTER_CROP",
                             "shapeRelationId": target_element['objectId'],
@@ -136,7 +141,7 @@ def main():
         except Exception as e:
             print(f"❌ 画像処理中にエラーが発生しました: {e}")
 
-    # リクエストの実行
+    # すべてのリクエスト（画像置換 + 文字置換）をまとめて実行
     if requests_body:
         try:
             slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
@@ -144,7 +149,7 @@ def main():
         except Exception as e:
             print(f"❌ Googleスライドの更新(batchUpdate)に失敗しました: {e}")
         
-    # 使い終わった一時ファイルを削除
+    # 使い終わった一時ファイルをドライブから削除
     if tmp_file_id:
         try:
             drive_service.files().delete(fileId=tmp_file_id, supportsAllDrives=True).execute()
