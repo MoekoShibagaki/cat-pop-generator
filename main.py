@@ -1,11 +1,8 @@
 import os
 import io
 import json
-import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from PIL import Image
 
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
 
@@ -37,51 +34,35 @@ def main():
             }
         })
 
-    # 2. 画像の流し込み（サービスアカウントの容量を使わない方法に変更）
+    # 2. 画像の流し込み（正しいAPIコマンドに修正）
     if image_id:
         try:
-            presentation = slides_service.presentations().get(presentationId=copy_id).execute()
-            slides = presentation.get('slides', [])
+            # フォームからアップロードされた画像（IMAGE_ID）の閲覧権限を公開にする
+            try:
+                drive_service.permissions().create(
+                    fileId=image_id,
+                    body={'type': 'anyone', 'role': 'reader'},
+                    supportsAllDrives=True
+                ).execute()
+            except Exception:
+                pass # 既に権限がある場合はスキップ
             
-            if slides:
-                slide = slides[0]
-                
-                target_element = None
-                for element in slide.get('pageElements', []):
-                    desc = (element.get('description', '') or '').strip()
-                    title = (element.get('title', '') or '').strip()
-                    
-                    if '写真' in desc or '写真' in title:
-                        target_element = element
-                        print(f"DEBUG: 【特定成功】本物の写真枠を確定しました。ID: {element.get('objectId')}")
-                        break
+            # Google APIが読み込める公開ダウンロードURL
+            web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
 
-                if target_element:
-                    print("DEBUG: サービスアカウントの容量制限を回避するため、直接画像を流し込みます...")
-                    
-                    # 💡 改善：元々ドライブにあるフォームからアップロードされた画像（IMAGE_ID）の閲覧権限を公開にする
-                    try:
-                        drive_service.permissions().create(
-                            fileId=image_id,
-                            body={'type': 'anyone', 'role': 'reader'},
-                            supportsAllDrives=True
-                        ).execute()
-                    except Exception:
-                        pass # 既に権限がある場合はスキップ
-                    
-                    # 変換なしで直接Google APIが読み込めるURLを生成
-                    web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
-
-                    # 枠を元の画像URLで置き換える（Googleスライド側のCENTER_CROP機能で綺麗に収めます）
-                    requests_body.insert(0, {
-                        "replaceShapeWithImage": {
-                            "imageReplaceMethod": "CENTER_CROP",
-                            "shapeRelationId": target_element['objectId'],
-                            "imageUrl": web_url
-                        }
-                    })
-                else:
-                    print("DEBUG: テンプレート内に代替テキストとして『写真』が設定された枠が見つかりませんでした。")
+            # 💡 修正：GoogleスライドAPIの正しい置換コマンドに変更
+            # 代替テキストの「説明(description)」に「写真」と入っている図形をすべて画像に置き換えます
+            requests_body.insert(0, {
+                "replaceAllShapesWithImage": {
+                    "imageUrl": web_url,
+                    "imageReplaceMethod": "CENTER_CROP",
+                    "containsText": {
+                        "text": "写真",
+                        "matchCase": False
+                    }
+                }
+            })
+            print("DEBUG: 画像置換リクエストを正しく作成しました。")
         except Exception as e:
             print(f"❌ 画像処理中にエラーが発生しました: {e}")
 
