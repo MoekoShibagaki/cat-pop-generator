@@ -68,41 +68,47 @@ def main():
 
     # 2. 画像の切り抜き＆流し込み
     if image_id:
-        img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
-        img_bytes = img_request.execute()
+        try:
+            img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
+            img_bytes = img_request.execute()
 
-        presentation = slides_service.presentations().get(presentationId=copy_id).execute()
-        slide = presentation.get('slides')[0]
-        
-        target_element = None
-        for element in slide.get('pageElements', []):
-            desc = element.get('description', '') or ''
-            title = element.get('title', '') or ''
-            if '{{写真}}' in desc or '{{写真}}' in title:
-                target_element = element
-                break
-
-        if target_element:
-            box_w = target_element['size']['width']['magnitude']
-            box_h = target_element['size']['height']['magnitude']
-
-            processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
+            presentation = slides_service.presentations().get(presentationId=copy_id).execute()
+            slides = presentation.get('slides', [])
             
-            # Googleドライブを使用せずBase64データとして直接埋め込むリクエスト
-            b64_data = base64.b64encode(processed_img_bytes).decode('utf-8')
-            data_url = f"data:image/jpeg;base64,{b64_data}"
+            if slides:
+                slide = slides[0]
+                slide_id = slide.get('pageId')
+                
+                target_element = None
+                for element in slide.get('pageElements', []):
+                    desc = element.get('description', '') or ''
+                    title = element.get('title', '') or ''
+                    if '{{写真}}' in desc or '{{写真}}' in title:
+                        target_element = element
+                        break
 
-            requests_body.append({
-                "createImage": {
-                    "elementProperties": {
-                        "pageId": slide['pageId'],
-                        "size": target_element['size'],
-                        "transform": target_element['transform']
-                    },
-                    "url": data_url
-                }
-            })
-            requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
+                if target_element and slide_id:
+                    box_w = target_element['size']['width']['magnitude']
+                    box_h = target_element['size']['height']['magnitude']
+
+                    processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
+                    
+                    b64_data = base64.b64encode(processed_img_bytes).decode('utf-8')
+                    data_url = f"data:image/jpeg;base64,{b64_data}"
+
+                    requests_body.append({
+                        "createImage": {
+                            "elementProperties": {
+                                "pageId": slide_id,
+                                "size": target_element['size'],
+                                "transform": target_element['transform']
+                            },
+                            "url": data_url
+                        }
+                    })
+                    requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
+        except Exception as e:
+            print(f"Image processing skipped due to error: {e}")
 
     if requests_body:
         slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
