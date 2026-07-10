@@ -81,9 +81,17 @@ def main():
                 
                 target_element = None
                 for element in slide.get('pageElements', []):
+                    # 代替テキストのタイトル、説明、またはシェイプ内のテキストに「{{写真}}」が含まれるか広くチェック
                     desc = element.get('description', '') or ''
                     title = element.get('title', '') or ''
-                    if '{{写真}}' in desc or '{{写真}}' in title:
+                    
+                    shape_text = ""
+                    if 'shape' in element and 'text' in element['shape']:
+                        for paragraph in element['shape']['text'].get('textElements', []):
+                            if 'textRun' in paragraph:
+                                shape_text += paragraph['textRun'].get('content', '')
+
+                    if '{{写真}}' in desc or '{{写真}}' in title or '{{写真}}' in shape_text:
                         target_element = element
                         break
 
