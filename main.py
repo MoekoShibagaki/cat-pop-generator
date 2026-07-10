@@ -49,7 +49,11 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
 def main():
     image_id = os.environ.get('IMAGE_ID')
     copy_id = os.environ.get('COPY_ID')
+    # FOLDER_IDが取得できない場合は、一時的にドライブのルート（最上層）に保存を試みる
     folder_id = os.environ.get('FOLDER_ID')
+
+    print(f"DEBUG: IMAGE_ID={image_id}, COPY_ID={copy_id}, FOLDER_ID={folder_id}")
+
     text_responses = json.loads(os.environ.get('TEXT_RESPONSES', '{}'))
 
     drive_service = get_gapi_service('drive', 'v3')
@@ -72,6 +76,7 @@ def main():
     # 2. 画像の切り抜き＆流し込み
     if image_id:
         try:
+            print("DEBUG: フォームからアップロードされた画像をダウンロード中...")
             img_request = drive_service.files().get_media(fileId=image_id, supportsAllDrives=True)
             img_bytes = img_request.execute()
 
@@ -93,60 +98,67 @@ def main():
                             if 'textRun' in paragraph:
                                 shape_text += paragraph['textRun'].get('content', '')
 
+                    # 設定されている代替テキスト（説明やタイトル）をチェック
                     if '{{写真}}' in desc or '{{写真}}' in title or '{{写真}}' in shape_text:
                         target_element = element
+                        print(f"DEBUG: テンプレート内の対象枠を発見しました。ID: {element.get('objectId')}")
                         break
 
                 if target_element and slide_id:
                     box_w = target_element['size']['width']['magnitude']
                     box_h = target_element['size']['height']['magnitude']
 
+                    print("DEBUG: 画像を枠のサイズに合わせて切り抜き中...")
                     processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
                     
-                    # 💡 対策：切り抜いた画像ファイルを一度あなたの共有フォルダに一時保存
-                    file_metadata = {
-                        'name': 'tmp_cropped_cat_image.jpg',
-                        'parents': [folder_id] if folder_id else []
-                    }
+                    # 切り抜いた画像をGoogleドライブに一時保存
+                    file_metadata = {'name': 'tmp_cropped_cat_image.jpg'}
+                    if folder_id:
+                        file_metadata['parents'] = [folder_id]
+                        
                     media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg')
                     tmp_file = drive_service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
                     tmp_file_id = tmp_file.get('id')
+                    print(f"DEBUG: 一時画像を保存しました。ID: {tmp_file_id}")
                     
-                    # 誰でもリンクを知っていれば閲覧できるように一時的に権限変更（Googleスライド流し込み用）
+                    # 閲覧権限を公開に変更
                     drive_service.permissions().create(
                         fileId=tmp_file_id,
                         body={'type': 'anyone', 'role': 'reader'},
                         supportsAllDrives=True
                     ).execute()
                     
-                    # Googleが確実に認識できる、ドライブの画像WebリンクURLを生成
                     web_url = f"https://docs.google.com/uc?export=download&id={tmp_file_id}"
 
+                    # 💡 確実な方法に変更：createImageではなく、枠そのものを画像URLで直接「置き換える」命令を使用
                     requests_body.append({
-                        "createImage": {
-                            "elementProperties": {
-                                "pageId": slide_id,
-                                "size": target_element['size'],
-                                "transform": target_element['transform']
-                            },
-                            "url": web_url
+                        "replaceShapeWithImage": {
+                            "imageReplaceMethod": "CENTER_CROP",
+                            "shapeRelationId": target_element['objectId'],
+                            "imageUrl": web_url
                         }
                     })
-                    requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
+                else:
+                    print("DEBUG: テンプレート内に『{{写真}}』の代替テキストを持つ枠が見つかりませんでした。")
         except Exception as e:
-            print(f"Image processing skipped due to error: {e}")
+            # エラーをスキップせず、ログに詳細を出力する
+            print(f"❌ 画像処理中にエラーが発生しました: {e}")
 
     # リクエストの実行
     if requests_body:
-        slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
+        try:
+            slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
+            print("DEBUG: スライドの文字置換および画像流し込みに成功しました。")
+        except Exception as e:
+            print(f"❌ Googleスライドの更新(batchUpdate)に失敗しました: {e}")
         
-    # 💡 対策：使い終わった一時画像ファイルをGoogleドライブから完全に削除する
+    # 使い終わった一時ファイルを削除
     if tmp_file_id:
         try:
             drive_service.files().delete(fileId=tmp_file_id, supportsAllDrives=True).execute()
-            print("Temporary image file cleaned up successfully.")
+            print("DEBUG: 一時画像を削除しました。")
         except Exception as e:
-            print(f"Failed to delete temporary file: {e}")
+            print(f"DEBUG: 一時画像の削除に失敗（自動で消えるため問題ありません）: {e}")
         
     print("Python process completed successfully!")
 
