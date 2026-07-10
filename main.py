@@ -49,7 +49,6 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
 def main():
     image_id = os.environ.get('IMAGE_ID')
     copy_id = os.environ.get('COPY_ID')
-    # FOLDER_IDが取得できない場合は、一時的にドライブのルート（最上層）に保存を試みる
     folder_id = os.environ.get('FOLDER_ID')
 
     print(f"DEBUG: IMAGE_ID={image_id}, COPY_ID={copy_id}, FOLDER_ID={folder_id}")
@@ -102,7 +101,7 @@ def main():
                     if '{{写真}}' in desc or '{{写真}}' in title or '{{写真}}' in shape_text:
                         target_element = element
                         print(f"DEBUG: テンプレート内の対象枠を発見しました。ID: {element.get('objectId')}")
-                        break
+                        break  # 💡 修正：見つかった時点でループを即座に抜ける（インデントの位置を修正）
 
                 if target_element and slide_id:
                     box_w = target_element['size']['width']['magnitude']
@@ -130,7 +129,7 @@ def main():
                     
                     web_url = f"https://docs.google.com/uc?export=download&id={tmp_file_id}"
 
-                    # 💡 確実な方法に変更：createImageではなく、枠そのものを画像URLで直接「置き換える」命令を使用
+                    # 枠そのものを画像URLで直接置き換える
                     requests_body.append({
                         "replaceShapeWithImage": {
                             "imageReplaceMethod": "CENTER_CROP",
@@ -141,7 +140,6 @@ def main():
                 else:
                     print("DEBUG: テンプレート内に『{{写真}}』の代替テキストを持つ枠が見つかりませんでした。")
         except Exception as e:
-            # エラーをスキップせず、ログに詳細を出力する
             print(f"❌ 画像処理中にエラーが発生しました: {e}")
 
     # リクエストの実行
