@@ -1,9 +1,9 @@
 import os
 import io
 import json
-import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
 
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
@@ -49,6 +49,7 @@ def crop_and_fit_image(image_bytes, target_width, target_height):
 def main():
     image_id = os.environ.get('IMAGE_ID')
     copy_id = os.environ.get('COPY_ID')
+    folder_id = os.environ.get('FOLDER_ID')
     text_responses = json.loads(os.environ.get('TEXT_RESPONSES', '{}'))
 
     drive_service = get_gapi_service('drive', 'v3')
@@ -66,6 +67,8 @@ def main():
             }
         })
 
+    tmp_file_id = None
+
     # 2. 画像の切り抜き＆流し込み
     if image_id:
         try:
@@ -81,7 +84,6 @@ def main():
                 
                 target_element = None
                 for element in slide.get('pageElements', []):
-                    # 代替テキストのタイトル、説明、またはシェイプ内のテキストに「{{写真}}」が含まれるか広くチェック
                     desc = element.get('description', '') or ''
                     title = element.get('title', '') or ''
                     
@@ -101,8 +103,24 @@ def main():
 
                     processed_img_bytes = crop_and_fit_image(img_bytes, box_w, box_h)
                     
-                    b64_data = base64.b64encode(processed_img_bytes).decode('utf-8')
-                    data_url = f"data:image/jpeg;base64,{b64_data}"
+                    # 💡 対策：切り抜いた画像ファイルを一度あなたの共有フォルダに一時保存
+                    file_metadata = {
+                        'name': 'tmp_cropped_cat_image.jpg',
+                        'parents': [folder_id] if folder_id else []
+                    }
+                    media = MediaIoBaseUpload(io.BytesIO(processed_img_bytes), mimetype='image/jpeg')
+                    tmp_file = drive_service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+                    tmp_file_id = tmp_file.get('id')
+                    
+                    # 誰でもリンクを知っていれば閲覧できるように一時的に権限変更（Googleスライド流し込み用）
+                    drive_service.permissions().create(
+                        fileId=tmp_file_id,
+                        body={'type': 'anyone', 'role': 'reader'},
+                        supportsAllDrives=True
+                    ).execute()
+                    
+                    # Googleが確実に認識できる、ドライブの画像WebリンクURLを生成
+                    web_url = f"https://docs.google.com/uc?export=download&id={tmp_file_id}"
 
                     requests_body.append({
                         "createImage": {
@@ -111,15 +129,24 @@ def main():
                                 "size": target_element['size'],
                                 "transform": target_element['transform']
                             },
-                            "url": data_url
+                            "url": web_url
                         }
                     })
                     requests_body.append({"deleteObject": {"objectId": target_element['objectId']}})
         except Exception as e:
             print(f"Image processing skipped due to error: {e}")
 
+    # リクエストの実行
     if requests_body:
         slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
+        
+    # 💡 対策：使い終わった一時画像ファイルをGoogleドライブから完全に削除する
+    if tmp_file_id:
+        try:
+            drive_service.files().delete(fileId=tmp_file_id, supportsAllDrives=True).execute()
+            print("Temporary image file cleaned up successfully.")
+        except Exception as e:
+            print(f"Failed to delete temporary file: {e}")
         
     print("Python process completed successfully!")
 
