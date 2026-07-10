@@ -60,7 +60,7 @@ def main():
 
     requests_body = []
     
-    # 1. テキスト置換
+    # 1. テキスト置換（文字データはすべてここで安全に置換されます）
     for key, value in text_responses.items():
         val_str = value[0] if isinstance(value, list) else str(value)
         requests_body.append({
@@ -88,20 +88,14 @@ def main():
                 
                 target_element = None
                 for element in slide.get('pageElements', []):
-                    desc = element.get('description', '') or ''
-                    title = element.get('title', '') or ''
+                    # 💡 改善の要：文字チェックを廃止し、ユーザーが設定した「代替テキスト（説明・タイトル）」だけを厳密にチェック
+                    desc = (element.get('description', '') or '').strip()
+                    title = (element.get('title', '') or '').strip()
                     
-                    shape_text = ""
-                    if 'shape' in element and 'text' in element['shape']:
-                        for paragraph in element['shape']['text'].get('textElements', []):
-                            if 'textRun' in paragraph:
-                                shape_text += paragraph['textRun'].get('content', '')
-
-                    # 設定されている代替テキスト（説明やタイトル）をチェック
-                    if '{{写真}}' in desc or '{{写真}}' in title or '{{写真}}' in shape_text:
+                    if '写真' in desc or '写真' in title:
                         target_element = element
-                        print(f"DEBUG: テンプレート内の対象枠を発見しました。ID: {element.get('objectId')}")
-                        break  # 💡 修正：見つかった時点でループを即座に抜ける（インデントの位置を修正）
+                        print(f"DEBUG: 厳密な判定により、本物の写真枠を発見しました。ID: {element.get('objectId')}, 説明: '{desc}', タイトル: '{title}'")
+                        break
 
                 if target_element and slide_id:
                     box_w = target_element['size']['width']['magnitude']
@@ -138,7 +132,7 @@ def main():
                         }
                     })
                 else:
-                    print("DEBUG: テンプレート内に『{{写真}}』の代替テキストを持つ枠が見つかりませんでした。")
+                    print("DEBUG: テンプレート内に代替テキストとして『写真』が設定された枠が見つかりませんでした。")
         except Exception as e:
             print(f"❌ 画像処理中にエラーが発生しました: {e}")
 
@@ -156,7 +150,7 @@ def main():
             drive_service.files().delete(fileId=tmp_file_id, supportsAllDrives=True).execute()
             print("DEBUG: 一時画像を削除しました。")
         except Exception as e:
-            print(f"DEBUG: 一時画像の削除に失敗（自動で消えるため問題ありません）: {e}")
+            print(f"DEBUG: 一時画像の削除に失敗: {e}")
         
     print("Python process completed successfully!")
 
