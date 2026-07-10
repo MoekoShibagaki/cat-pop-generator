@@ -34,7 +34,7 @@ def main():
             }
         })
 
-    # 2. 画像の流し込み（APIフィールド名を修正）
+    # 2. 画像の流し込み
     if image_id:
         try:
             # フォームからアップロードされた画像の閲覧権限を公開にする
@@ -50,14 +50,16 @@ def main():
             # Google APIが読み込める公開ダウンロードURL
             web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
 
-            # スライドの要素を調べて、代替テキストに「写真」がある枠を特定
+            # スライドの要素を取得
             presentation = slides_service.presentations().get(presentationId=copy_id).execute()
             slides = presentation.get('slides', [])
             
             if slides:
                 slide = slides[0]
-                target_element = None
+                # 💡 修正：スライドのページIDを確実な方法で取得
+                page_id = slide.get('objectId')
                 
+                target_element = None
                 for element in slide.get('pageElements', []):
                     desc = (element.get('description', '') or '').strip()
                     title = (element.get('title', '') or '').strip()
@@ -67,12 +69,12 @@ def main():
                         print(f"DEBUG: 差し替え対象の枠IDを確定しました: {element.get('objectId')}")
                         break
 
-                if target_element:
-                    # 💡 修正：pageId ではなく pageObjectId が正しい仕様です
+                if target_element and page_id:
+                    # 固有ID（objectId）に対して、直接画像を生成して配置する命令
                     requests_body.insert(0, {
                         "createImage": {
                             "elementProperties": {
-                                "pageObjectId": slide.get('pageId'),
+                                "pageObjectId": page_id,
                                 "transform": target_element['transform'],
                                 "size": target_element['size']
                             },
@@ -88,7 +90,7 @@ def main():
                     })
                     print("DEBUG: ピンポイント画像配置リクエストを正しく作成しました。")
                 else:
-                    print("DEBUG: 代替テキストに『写真』が含まれる枠が見つかりませんでした。")
+                    print("DEBUG: 代替テキストに『写真』が含まれる枠、またはページIDが見つかりませんでした。")
                     
         except Exception as e:
             print(f"❌ 画像処理中にエラーが発生しました: {e}")
