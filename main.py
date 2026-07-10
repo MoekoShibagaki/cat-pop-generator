@@ -34,7 +34,7 @@ def main():
             }
         })
 
-    # 2. 画像の流し込み（固有ID指定方式にアップデート）
+    # 2. 画像の流し込み（APIフィールド名を修正）
     if image_id:
         try:
             # フォームからアップロードされた画像の閲覧権限を公開にする
@@ -50,44 +50,43 @@ def main():
             # Google APIが読み込める公開ダウンロードURL
             web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
 
-            # スライドの要素を調べて、代替テキストに「写真」がある枠を1件だけ特定する
+            # スライドの要素を調べて、代替テキストに「写真」がある枠を特定
             presentation = slides_service.presentations().get(presentationId=copy_id).execute()
             slides = presentation.get('slides', [])
             
             if slides:
                 slide = slides[0]
-                target_element_id = None
+                target_element = None
                 
                 for element in slide.get('pageElements', []):
                     desc = (element.get('description', '') or '').strip()
                     title = (element.get('title', '') or '').strip()
                     
                     if '写真' in desc or '写真' in title:
-                        target_element_id = element.get('objectId')
-                        print(f"DEBUG: 差し替え対象の枠IDを確定しました: {target_element_id}")
+                        target_element = element
+                        print(f"DEBUG: 差し替え対象の枠IDを確定しました: {element.get('objectId')}")
                         break
 
-                # 💡 修正：特定した枠ID（objectId）に対して、直接画像を生成して配置する命令
-                if target_element_id:
+                if target_element:
+                    # 💡 修正：pageId ではなく pageObjectId が正しい仕様です
                     requests_body.insert(0, {
                         "createImage": {
                             "elementProperties": {
-                                "pageId": slide.get('pageId'),
-                                # 元の図形と全く同じ位置・サイズに画像を配置する
-                                "transform": element['transform'],
-                                "size": element['size']
+                                "pageObjectId": slide.get('pageId'),
+                                "transform": target_element['transform'],
+                                "size": target_element['size']
                             },
                             "url": web_url
                         }
                     })
                     
-                    # 💡 元のグレーの枠（図形）が残ると邪魔なので、画像配置と同時に元の図形を削除する命令を追加
+                    # 画像配置と同時に元の図形を削除する命令
                     requests_body.append({
                         "deleteObject": {
-                            "objectId": target_element_id
+                            "objectId": target_element.get('objectId')
                         }
                     })
-                    print("DEBUG: ピンポイント画像配置（createImage）リクエストを作成しました。")
+                    print("DEBUG: ピンポイント画像配置リクエストを正しく作成しました。")
                 else:
                     print("DEBUG: 代替テキストに『写真』が含まれる枠が見つかりませんでした。")
                     
