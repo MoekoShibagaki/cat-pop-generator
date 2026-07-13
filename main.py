@@ -103,22 +103,22 @@ def main():
                 except Exception as e:
                     print(f"WARNING: 画像メタデータの取得に失敗しました: {e}")
 
-                # テンプレート側の図形枠のサイズとアフィン変換情報を取得
+                # テンプレート側の元の図形枠のサイズとアフィン変換情報を取得
                 box_size = element.get('size', {})
+                base_box_width = box_size.get('width', {}).get('magnitude', 1.0)
+                base_box_height = box_size.get('height', {}).get('magnitude', 1.0)
+                
                 transform = element.get('transform', {})
                 scale_x = transform.get('scaleX', 1.0)
                 scale_y = transform.get('scaleY', 1.0)
+                tx = transform.get('translateX', 0.0)
+                ty = transform.get('translateY', 0.0)
                 
-                # スライド上の実際の表示位置・サイズ（見た目のサイズ）を計算
-                box_left = transform.get('translateX', 0.0)
-                box_top = transform.get('translateY', 0.0)
-                actual_box_width = box_size.get('width', {}).get('magnitude', 1.0) * scale_x
-                actual_box_height = box_size.get('height', {}).get('magnitude', 1.0) * scale_y
+                # スライド上の「実際の表示サイズ（見た目のサイズ）」を計算
+                actual_box_width = base_box_width * scale_x
+                actual_box_height = base_box_height * scale_y
                 
-                # -------------------------------------------------------------
-                # 【修正の核心】
-                # 辞書型（requests_body）の外側で、あらかじめ比率とトリミング量を計算する
-                # -------------------------------------------------------------
+                # 比率の割り出し
                 box_ratio = actual_box_width / actual_box_height
                 img_ratio = img_width / img_height
                 
@@ -127,47 +127,63 @@ def main():
                 crop_top = 0.0
                 crop_bottom = 0.0
                 
+                # APIの仕様(size上書き禁止)に従い、元の枠の形からtransform倍率のみで画像をカバー変形させる
                 if img_ratio > box_ratio:
-                    # 【横長画像】左右をカットして中央寄せ
+                    # 【横長画像】
+                    # 実際の表示高(actual_box_height)に画像を合わせ、左右をはみ出させてトリミング
                     excess_ratio = (img_ratio - box_ratio) / img_ratio
                     crop_left = excess_ratio / 2.0
                     crop_right = excess_ratio / 2.0
+                    
+                    # 枠サイズ（base_box）に対する比率から、アフィン変換スケールと位置を正しく補正
+                    new_scale_x = scale_y * (img_width / base_box_width) * (actual_box_height / img_height)
+                    new_scale_y = scale_y
+                    
+                    displayed_img_width = actual_box_height * img_ratio
+                    new_tx = tx - (displayed_img_width - actual_box_width) / 2.0
+                    new_ty = ty
                 else:
-                    # 【縦長画像】上下をカットして中央寄せ
+                    # 【縦長画像】
+                    # 実際の表示幅(actual_box_width)に画像を合わせ、上下をはみ出させてトリミング
                     excess_ratio = (box_ratio - img_ratio) / box_ratio
-                    # Google Slides APIの仕様に基づき、枠ベースに直したトリミング率を計算
+                    
+                    # 枠ベースのクロップ率を正確に算出
                     fit_height_in_box = actual_box_width / img_ratio
                     crop_top = ((fit_height_in_box - actual_box_height) / fit_height_in_box) / 2.0
                     crop_bottom = crop_top
+                    
+                    new_scale_x = scale_x
+                    new_scale_y = scale_x * (img_height / base_box_height) * (actual_box_width / img_width)
+                    
+                    displayed_img_height = actual_box_width / img_ratio
+                    new_tx = tx
+                    new_ty = ty - (displayed_img_height - actual_box_height) / 2.0
 
                 # 新しい画像要素の固有ID
                 new_image_object_id = f"InsertedImage_{element.get('objectId')}"
 
-                # 1. 実際の表示サイズと位置で画像を生成するリクエスト
+                # 1. 枠の元サイズ(box_size)を壊さず、transformマトリクスだけを使って画像を配置する
                 requests_body.insert(0, {
                     "createImage": {
                         "objectId": new_image_object_id,
                         "elementProperties": {
                             "pageObjectId": page_id,
                             "transform": {
-                                "scaleX": 1.0,
-                                "scaleY": 1.0,
-                                "shearX": 0.0,
-                                "shearY": 0.0,
-                                "translateX": box_left,
-                                "translateY": box_top,
+                                "scaleX": new_scale_x,
+                                "scaleY": new_scale_y,
+                                "shearX": transform.get('shearX', 0.0),
+                                "shearY": transform.get('shearY', 0.0),
+                                "translateX": new_tx,
+                                "translateY": new_ty,
                                 "unit": transform.get('unit', 'PT')
                             },
-                            "size": {
-                                "width": {"magnitude": actual_box_width, "unit": "PT"},
-                                "height": {"magnitude": actual_box_height, "unit": "PT"}
-                            }
+                            "size": box_size  # 重要：テンプレートの元サイズをそのまま渡す
                         },
                         "url": web_url
                     }
                 })
                 
-                # 2. 計算した中央寄せ用のトリミング（Crop）を適用するリクエスト
+                # 2. はみ出た余白をカット（トリミング）するリクエスト
                 requests_body.append({
                     "updateImageProperties": {
                         "objectId": new_image_object_id,
