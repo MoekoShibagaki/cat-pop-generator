@@ -76,12 +76,10 @@ def main():
                     })
                     print(f"DEBUG: 団体名「{group_name}」用の文字色変更リクエストを追加しました。")
 
-            # ② 画像の流し込み処理（アスペクト比維持・枠内ぴったりトリミング対応）
+            # ② 画像の流し込み処理（アスペクト比維持・トリミング対応）
             if image_id and ('写真' in desc or '写真' in title):
                 web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
                 
-                # 画像のオリジナルサイズ（解像度）をDrive APIから取得
-                img_width, img_height = 1.0, 1.0
                 try:
                     drive_service.permissions().create(
                         fileId=image_id,
@@ -89,37 +87,40 @@ def main():
                         supportsAllDrives=True
                     ).execute()
                     
+                    # 画像のオリジナルサイズ（解像度）をDrive APIから取得
                     image_metadata = drive_service.files().get(
                         fileId=image_id, 
                         fields="imageMediaMetadata"
                     ).execute()
                     
                     media_meta = image_metadata.get('imageMediaMetadata', {})
-                    w = media_meta.get('width')
-                    h = media_meta.get('height')
-                    if w and h:
-                        img_width = float(w)
-                        img_height = float(h)
+                    img_width = media_meta.get('width')
+                    img_height = media_meta.get('height')
+                    
+                    if not img_width or not img_height:
+                        # 万が一メタデータからサイズが取れなかった場合のセーフティ
+                        print("WARNING: 画像サイズが取得できなかったため、通常の引き伸ばし配置を行います。")
+                        img_width, img_height = 1, 1
+                        
                 except Exception as e:
                     print(f"WARNING: 画像メタデータの取得に失敗しました: {e}")
+                    img_width, img_height = 1, 1
 
-                # テンプレート側の元の図形枠のサイズとアフィン変換情報を取得
+                # テンプレート側の図形枠のサイズと位置情報を取得
                 box_size = element.get('size', {})
-                base_box_width = box_size.get('width', {}).get('magnitude', 1.0)
-                base_box_height = box_size.get('height', {}).get('magnitude', 1.0)
+                box_width = box_size.get('width', {}).get('magnitude', 1)
+                box_height = box_size.get('height', {}).get('magnitude', 1)
                 
                 transform = element.get('transform', {})
-                scale_x = transform.get('scaleX', 1.0)
-                scale_y = transform.get('scaleY', 1.0)
-                tx = transform.get('translateX', 0.0)
-                ty = transform.get('translateY', 0.0)
+                scale_x = transform.get('scaleX', 1)
+                scale_y = transform.get('scaleY', 1)
+                shear_x = transform.get('shearX', 0)
+                shear_y = transform.get('shearY', 0)
+                tx = transform.get('translateX', 0)
+                ty = transform.get('translateY', 0)
                 
-                # スライド上の「実際の表示サイズ（見た目のサイズ）」を計算
-                actual_box_width = base_box_width * scale_x
-                actual_box_height = base_box_height * scale_y
-                
-                # 比率の割り出し
-                box_ratio = actual_box_width / actual_box_height
+                # 比率の計算
+                box_ratio = box_width / box_height
                 img_ratio = img_width / img_height
                 
                 crop_left = 0.0
@@ -127,42 +128,42 @@ def main():
                 crop_top = 0.0
                 crop_bottom = 0.0
                 
-                # APIの仕様(size上書き禁止)に従い、元の枠の形からtransform倍率のみで画像をカバー変形させる
+                # 新しいアフィン変換マトリクス（配置位置と拡大率）の初期化
+                new_scale_x = scale_x
+                new_scale_y = scale_y
+                new_tx = tx
+                new_ty = ty
+
                 if img_ratio > box_ratio:
-                    # 【横長画像】
-                    # 実際の表示高(actual_box_height)に画像を合わせ、左右をはみ出させてトリミング
+                    # 【横長画像（スマホ横向きなど）】
+                    # 縦を枠に合わせ、左右をはみ出させてセンタリングし、トリミングする
                     excess_ratio = (img_ratio - box_ratio) / img_ratio
                     crop_left = excess_ratio / 2.0
                     crop_right = excess_ratio / 2.0
                     
-                    # 枠サイズ（base_box）に対する比率から、アフィン変換スケールと位置を正しく補正
-                    new_scale_x = scale_y * (img_width / base_box_width) * (actual_box_height / img_height)
-                    new_scale_y = scale_y
-                    
-                    displayed_img_width = actual_box_height * img_ratio
-                    new_tx = tx - (displayed_img_width - actual_box_width) / 2.0
-                    new_ty = ty
+                    # 拡大率と位置の補正
+                    display_width = box_height * img_ratio
+                    new_scale_x = scale_x * (display_width / box_width)
+                    new_tx = tx - (scale_x * (display_width - box_width)) / 2.0
                 else:
-                    # 【縦長画像】
-                    # 実際の表示幅(actual_box_width)に画像を合わせ、上下をはみ出させてトリミング
+                    # 【縦長画像（スマホ縦向きなど）】
+                    # 横を枠に合わせ、上下をはみ出させてセンタリングし、トリミングする
                     excess_ratio = (box_ratio - img_ratio) / box_ratio
+                    # 比率ベースのトリミング値を計算
+                    img_scale_in_box = box_width / img_width
+                    display_height = img_height * img_scale_in_box
                     
-                    # 枠ベースのクロップ率を正確に算出
-                    fit_height_in_box = actual_box_width / img_ratio
-                    crop_top = ((fit_height_in_box - actual_box_height) / fit_height_in_box) / 2.0
+                    crop_top = ((display_height - box_height) / display_height) / 2.0
                     crop_bottom = crop_top
                     
-                    new_scale_x = scale_x
-                    new_scale_y = scale_x * (img_height / base_box_height) * (actual_box_width / img_width)
-                    
-                    displayed_img_height = actual_box_width / img_ratio
-                    new_tx = tx
-                    new_ty = ty - (displayed_img_height - actual_box_height) / 2.0
+                    # 拡大率と位置の補正
+                    new_scale_y = scale_y * (display_height / box_height)
+                    new_ty = ty - (scale_y * (display_height - box_height)) / 2.0
 
-                # 新しい画像要素の固有ID
+                # 新しい要素IDを仮決定（画像を生成してからトリミングするため、IDを固定します）
                 new_image_object_id = f"InsertedImage_{element.get('objectId')}"
 
-                # 1. 枠の元サイズ(box_size)を壊さず、transformマトリクスだけを使って画像を配置する
+                # 画像を少し大きめ（はみ出すサイズ）に配置するリクエスト
                 requests_body.insert(0, {
                     "createImage": {
                         "objectId": new_image_object_id,
@@ -171,19 +172,19 @@ def main():
                             "transform": {
                                 "scaleX": new_scale_x,
                                 "scaleY": new_scale_y,
-                                "shearX": transform.get('shearX', 0.0),
-                                "shearY": transform.get('shearY', 0.0),
+                                "shearX": shear_x,
+                                "shearY": shear_y,
                                 "translateX": new_tx,
                                 "translateY": new_ty,
                                 "unit": transform.get('unit', 'PT')
                             },
-                            "size": box_size  # 重要：テンプレートの元サイズをそのまま渡す
+                            "size": box_size
                         },
                         "url": web_url
                     }
                 })
                 
-                # 2. はみ出た余白をカット（トリミング）するリクエスト
+                # 配置した画像に対してトリミング（クロップ）を適用するリクエスト
                 requests_body.append({
                     "updateImageProperties": {
                         "objectId": new_image_object_id,
@@ -199,19 +200,19 @@ def main():
                     }
                 })
 
-                # 3. テンプレートの元の図形（枠）を消去するリクエスト
+                # 元の図形（枠）を削除するリクエスト
                 requests_body.append({
                     "deleteObject": {
                         "objectId": element.get('objectId')
                     }
                 })
-                print("DEBUG: 縦横比維持・枠ぴったりトリミングの画像リクエストを生成しました。")
+                print("DEBUG: 縦横比維持・トリミング対応の画像配置リクエストを作成しました。")
 
     # すべてのリクエストをまとめて実行
     if requests_body:
         try:
             slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
-            print("DEBUG: スライドの文字置換・画像流し込み・文字色変更に成功しました。")
+            print("DEBUG: スライドの文字置換・画像流し込み（トリミング最適化）・文字色変更に成功しました。")
         except Exception as e:
             print(f"❌ Googleスライドの更新(batchUpdate)に失敗しました: {e}")
         
