@@ -76,7 +76,7 @@ def main():
                     })
                     print(f"DEBUG: 団体名「{group_name}」用の文字色変更リクエストを追加しました。")
 
-            # ② 画像の流し込み処理（アスペクト比維持・トリミング対応）
+            # ② 画像の流し込み処理（アスペクト比維持・はみ出し防止トリミング対応）
             if image_id and ('写真' in desc or '写真' in title):
                 web_url = f"https://drive.google.com/uc?export=download&id={image_id}"
                 
@@ -98,7 +98,6 @@ def main():
                     img_height = media_meta.get('height')
                     
                     if not img_width or not img_height:
-                        # 万が一メタデータからサイズが取れなかった場合のセーフティ
                         print("WARNING: 画像サイズが取得できなかったため、通常の引き伸ばし配置を行います。")
                         img_width, img_height = 1, 1
                         
@@ -106,7 +105,7 @@ def main():
                     print(f"WARNING: 画像メタデータの取得に失敗しました: {e}")
                     img_width, img_height = 1, 1
 
-                # テンプレート側の図形枠のサイズと位置情報を取得
+                # テンプレート側の図形枠のサイズとアフィン変換（位置・拡大率）の情報を取得
                 box_size = element.get('size', {})
                 box_width = box_size.get('width', {}).get('magnitude', 1)
                 box_height = box_size.get('height', {}).get('magnitude', 1)
@@ -119,8 +118,11 @@ def main():
                 tx = transform.get('translateX', 0)
                 ty = transform.get('translateY', 0)
                 
-                # 比率の計算
-                box_ratio = box_width / box_height
+                # スライド上の実際の表示サイズを割り出す
+                actual_box_width = box_width * scale_x
+                actual_box_height = box_height * scale_y
+                
+                box_ratio = actual_box_width / actual_box_height
                 img_ratio = img_width / img_height
                 
                 crop_left = 0.0
@@ -128,42 +130,45 @@ def main():
                 crop_top = 0.0
                 crop_bottom = 0.0
                 
-                # 新しいアフィン変換マトリクス（配置位置と拡大率）の初期化
+                # 新しい変換マトリクスの初期化（位置の補正用）
                 new_scale_x = scale_x
                 new_scale_y = scale_y
                 new_tx = tx
                 new_ty = ty
 
+                # 【ロジックの修正点】
+                # Google Slides API の仕様に合わせ、実際の枠にフィットさせた状態から
+                # どれだけ「画像がはみ出すべきか」の比率を再計算し、アフィンマトリクスとトリミング量を完全同期させます
                 if img_ratio > box_ratio:
-                    # 【横長画像（スマホ横向きなど）】
-                    # 縦を枠に合わせ、左右をはみ出させてセンタリングし、トリミングする
+                    # 【横長画像】
+                    # 縦を実際の枠高に合わせ、左右を拡大してはみ出させる
                     excess_ratio = (img_ratio - box_ratio) / img_ratio
                     crop_left = excess_ratio / 2.0
                     crop_right = excess_ratio / 2.0
                     
-                    # 拡大率と位置の補正
-                    display_width = box_height * img_ratio
-                    new_scale_x = scale_x * (display_width / box_width)
-                    new_tx = tx - (scale_x * (display_width - box_width)) / 2.0
+                    # 左右にはみ出した分、配置開始位置（X）を左にズラして中央寄せ
+                    new_scale_x = scale_y * (img_width / box_width) * (box_height / img_height)
+                    actual_img_width = actual_box_height * img_ratio
+                    new_tx = tx - (actual_img_width - actual_box_width) / 2.0
                 else:
-                    # 【縦長画像（スマホ縦向きなど）】
-                    # 横を枠に合わせ、上下をはみ出させてセンタリングし、トリミングする
+                    # 【縦長画像】
+                    # 横を実際の枠幅に合わせ、上下を拡大してはみ出させる
                     excess_ratio = (box_ratio - img_ratio) / box_ratio
-                    # 比率ベースのトリミング値を計算
-                    img_scale_in_box = box_width / img_width
-                    display_height = img_height * img_scale_in_box
                     
-                    crop_top = ((display_height - box_height) / display_height) / 2.0
+                    # 枠のベースサイズ基準で切り抜きオフセットを正しく計算
+                    fit_height_in_box = box_width / img_ratio
+                    crop_top = ((fit_height_in_box - box_height) / fit_height_in_box) / 2.0
                     crop_bottom = crop_top
                     
-                    # 拡大率と位置の補正
-                    new_scale_y = scale_y * (display_height / box_height)
-                    new_ty = ty - (scale_y * (display_height - box_height)) / 2.0
+                    # 上下にはみ出した分、配置開始位置（Y）を上にズラして中央寄せ
+                    new_scale_y = scale_x * (img_height / box_height) * (box_width / img_width)
+                    actual_img_height = actual_box_width / img_ratio
+                    new_ty = ty - (actual_img_height - actual_box_height) / 2.0
 
-                # 新しい要素IDを仮決定（画像を生成してからトリミングするため、IDを固定します）
+                # 新しい画像要素の固有IDを定義
                 new_image_object_id = f"InsertedImage_{element.get('objectId')}"
 
-                # 画像を少し大きめ（はみ出すサイズ）に配置するリクエスト
+                # 1. 拡大・中央寄せを反映した状態で画像を生成するリクエスト
                 requests_body.insert(0, {
                     "createImage": {
                         "objectId": new_image_object_id,
@@ -184,7 +189,7 @@ def main():
                     }
                 })
                 
-                # 配置した画像に対してトリミング（クロップ）を適用するリクエスト
+                # 2. はみ出た余白を綺麗にカット（トリミング）するリクエスト
                 requests_body.append({
                     "updateImageProperties": {
                         "objectId": new_image_object_id,
@@ -200,19 +205,19 @@ def main():
                     }
                 })
 
-                # 元の図形（枠）を削除するリクエスト
+                # 3. テンプレートの元の図形（枠）を消去するリクエスト
                 requests_body.append({
                     "deleteObject": {
                         "objectId": element.get('objectId')
                     }
                 })
-                print("DEBUG: 縦横比維持・トリミング対応の画像配置リクエストを作成しました。")
+                print("DEBUG: 縦横比維持・枠ぴったりトリミングの画像リクエストを生成しました。")
 
     # すべてのリクエストをまとめて実行
     if requests_body:
         try:
             slides_service.presentations().batchUpdate(presentationId=copy_id, body={"requests": requests_body}).execute()
-            print("DEBUG: スライドの文字置換・画像流し込み（トリミング最適化）・文字色変更に成功しました。")
+            print("DEBUG: スライドの文字置換・画像流し込み（枠内ぴったりトリミング）・文字色変更に成功しました。")
         except Exception as e:
             print(f"❌ Googleスライドの更新(batchUpdate)に失敗しました: {e}")
         
